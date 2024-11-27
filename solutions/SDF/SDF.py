@@ -2,22 +2,9 @@ import cv2
 import numpy as np
 import mediapipe as mp
 from ultralytics import YOLO
-from collections import deque
 
 # Function to calculate the Signed Distance Function (SDF) from a point to a rectangle
 def point_to_rect_sdf(x, y, x1, y1, x2, y2):
-    """
-    Calculate the Signed Distance Function (SDF) from a point (x, y) to a rectangle defined by (x1, y1, x2, y2).
-    
-    Parameters:
-        x, y: Coordinates of the point.
-        x1, y1, x2, y2: Coordinates defining the rectangle (bed bounding box).
-    
-    Returns:
-        The SDF value:
-            - Negative if the point is inside the rectangle (negative distance to the nearest edge).
-            - Positive if the point is outside the rectangle (distance to the rectangle).
-    """
     if x1 <= x <= x2 and y1 <= y <= y2:
         # Point is inside the rectangle
         sdf = -min(x - x1, x2 - x, y - y1, y2 - y)
@@ -30,72 +17,23 @@ def point_to_rect_sdf(x, y, x1, y1, x2, y2):
 
 # Function to find the closest point on the rectangle to a given point
 def closest_point_on_rect(x, y, x1, y1, x2, y2):
-    """
-    Find the closest point on the rectangle to the given point.
-    
-    Parameters:
-        x, y: Coordinates of the point.
-        x1, y1, x2, y2: Coordinates defining the rectangle.
-    
-    Returns:
-        The closest point (closest_x, closest_y) on the rectangle to the point (x, y).
-    """
     closest_x = min(max(x, x1), x2)
     closest_y = min(max(y, y1), y2)
     return closest_x, closest_y
 
-# Function to detect the person within the bed area using MediaPipe Pose
-def detect_person_in_bed_area(frame, bed_bounding_box, pose):
-    """
-    Detects the person within the bed area using MediaPipe Pose.
-    
-    Parameters:
-        frame: The current video frame.
-        bed_bounding_box: The coordinates of the bed bounding box (x1, y1, x2, y2).
-        pose: The initialized MediaPipe Pose object.
-    
-    Returns:
-        A list of landmarks if detected, otherwise None.
-    """
-    x1, y1, x2, y2 = bed_bounding_box
-
-    # Crop the frame to the bed bounding box
-    cropped_frame = frame[y1:y2, x1:x2]
-
-    # Check if the cropped frame is of sufficient size for MediaPipe
-    min_width, min_height = 100, 100  # Minimum dimensions for reliable detection
-    if cropped_frame.shape[1] < min_width or cropped_frame.shape[0] < min_height:
-        print("Cropped frame is too small for pose detection.")
-        return None
-
-    # Convert the cropped frame to RGB as required by MediaPipe
-    cropped_frame_rgb = cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2RGB)
-
-    # Process the cropped frame with MediaPipe Pose
-    result = pose.process(cropped_frame_rgb)
-
-    if result.pose_landmarks:
-        # Map landmarks back to the original frame
-        height, width, _ = cropped_frame.shape
-        landmarks = []
-        for landmark in result.pose_landmarks.landmark:
-            x = landmark.x * width + x1
-            y = landmark.y * height + y1
-            landmarks.append((x, y))
-        return landmarks
-    else:
-        return None
+# Function to calculate the average displacement of landmarks between frames
+def calculate_landmark_displacement(landmarks1, landmarks2):
+    if not landmarks1 or not landmarks2:
+        return float('inf')  # If landmarks are missing, return infinite displacement
+    displacements = []
+    for lm1, lm2 in zip(landmarks1, landmarks2):
+        dx = lm1[0] - lm2[0]
+        dy = lm1[1] - lm2[1]
+        displacement = np.hypot(dx, dy)
+        displacements.append(displacement)
+    return np.mean(displacements)
 
 def process_video_with_pose_detection_inside_bed(video_path, model_path, skip_frames=None):
-    """
-    Processes the video to detect pose landmarks and monitor SDF values relative to the bed's bounding box.
-    Implements trend detection in SDF values to predict bed exit.
-
-    Parameters:
-        video_path: Path to the video file.
-        model_path: Path to the YOLOv8 model file.
-        skip_frames: Number of frames to skip between processing (optional).
-    """
     # Load the YOLOv8 model
     model = YOLO(model_path)
 
@@ -120,20 +58,6 @@ def process_video_with_pose_detection_inside_bed(video_path, model_path, skip_fr
 
     # Threshold for displacement detection between frames
     displacement_threshold = 200  # Adjust based on your video's resolution and desired sensitivity
-
-    # Parameters for Trend Detection
-    trend_window = 30  # Number of frames for trend calculation
-    trend_threshold = 5.0  # Threshold for trend slope to trigger alert
-
-    # Initialize deque for each landmark to store SDF values for trend analysis
-    landmarks_to_monitor = [
-        mp_pose.PoseLandmark.LEFT_WRIST,
-        mp_pose.PoseLandmark.RIGHT_WRIST,
-        mp_pose.PoseLandmark.LEFT_ANKLE,
-        mp_pose.PoseLandmark.RIGHT_ANKLE,
-        mp_pose.PoseLandmark.NOSE
-    ]
-    sdf_trend_history = {landmark_id: deque(maxlen=trend_window) for landmark_id in landmarks_to_monitor}
 
     while True:
         ret, frame = cap.read()
@@ -235,7 +159,15 @@ def process_video_with_pose_detection_inside_bed(video_path, model_path, skip_fr
                 # Update previous_landmarks for the next frame
                 previous_landmarks = current_landmarks
 
-                # Loop through each landmark to monitor
+                # List of landmarks to monitor
+                landmarks_to_monitor = [
+                    mp_pose.PoseLandmark.LEFT_WRIST,
+                    mp_pose.PoseLandmark.RIGHT_WRIST,
+                    mp_pose.PoseLandmark.LEFT_ANKLE,
+                    mp_pose.PoseLandmark.RIGHT_ANKLE,
+                    mp_pose.PoseLandmark.NOSE
+                ]
+
                 for landmark_id in landmarks_to_monitor:
                     # Get the landmark from the pose landmarks
                     landmark = result.pose_landmarks.landmark[landmark_id.value]
@@ -248,28 +180,6 @@ def process_video_with_pose_detection_inside_bed(video_path, model_path, skip_fr
                     x1_bed, y1_bed, x2_bed, y2_bed = bed_bounding_box
                     sdf = point_to_rect_sdf(x, y, x1_bed, y1_bed, x2_bed, y2_bed)
                     sdf_values.append(sdf)
-
-                    # Update the deque with the new SDF value
-                    sdf_trend_history[landmark_id].append(sdf)
-
-                    # Compute trend when the window is full
-                    if len(sdf_trend_history[landmark_id]) == trend_window:
-                        # Calculate trend (slope) using linear regression
-                        x_vals = np.arange(trend_window)
-                        y_vals = np.array(sdf_trend_history[landmark_id])
-                        slope, intercept = np.polyfit(x_vals, y_vals, 1)
-
-                        # Display trend information
-                        cv2.putText(frame, f"Slope: {slope:.2f}", (int(x) + 10, int(y) + 40),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
-
-                        # Check if trend slope exceeds threshold
-                        if slope > trend_threshold:
-                            current_time = current_frame / frame_rate
-                            warning_text = f"Warning: Moving towards bed edge at {current_time:.2f}s"
-                            print(warning_text)
-                            cv2.putText(frame, warning_text, (50, 150),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
                     # Find the closest point on the bed bounding box
                     closest_x, closest_y = closest_point_on_rect(x, y, x1_bed, y1_bed, x2_bed, y2_bed)
@@ -320,29 +230,48 @@ def process_video_with_pose_detection_inside_bed(video_path, model_path, skip_fr
     cap.release()
     cv2.destroyAllWindows()
 
-# Function to calculate the average displacement of landmarks between frames
-def calculate_landmark_displacement(landmarks1, landmarks2):
+def detect_person_in_bed_area(frame, bed_bounding_box, pose):
     """
-    Calculates the average displacement between two sets of landmarks.
+    Detects the person within the bed area using MediaPipe Pose.
 
     Parameters:
-        landmarks1: List of (x, y) tuples for the previous frame.
-        landmarks2: List of (x, y) tuples for the current frame.
+        frame: The current video frame.
+        bed_bounding_box: The coordinates of the bed bounding box (x1, y1, x2, y2).
+        pose: The initialized MediaPipe Pose object.
 
     Returns:
-        The average displacement value.
+        A list of landmarks if detected, otherwise None.
     """
-    if not landmarks1 or not landmarks2:
-        return float('inf')  # If landmarks are missing, return infinite displacement
-    displacements = []
-    for lm1, lm2 in zip(landmarks1, landmarks2):
-        dx = lm1[0] - lm2[0]
-        dy = lm1[1] - lm2[1]
-        displacement = np.hypot(dx, dy)
-        displacements.append(displacement)
-    return np.mean(displacements)
+    x1, y1, x2, y2 = bed_bounding_box
 
-if __name__ == "__main__":
+    # Crop the frame to the bed bounding box
+    cropped_frame = frame[y1:y2, x1:x2]
+
+    # Check if the cropped frame is of sufficient size for MediaPipe
+    min_width, min_height = 100, 100  # Minimum dimensions for reliable detection
+    if cropped_frame.shape[1] < min_width or cropped_frame.shape[0] < min_height:
+        print("Cropped frame is too small for pose detection.")
+        return None
+
+    # Convert the cropped frame to RGB as required by MediaPipe
+    cropped_frame_rgb = cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2RGB)
+
+    # Process the cropped frame with MediaPipe Pose
+    result = pose.process(cropped_frame_rgb)
+
+    if result.pose_landmarks:
+        # Map landmarks back to the original frame
+        height, width, _ = cropped_frame.shape
+        landmarks = []
+        for landmark in result.pose_landmarks.landmark:
+            x = landmark.x * width + x1
+            y = landmark.y * height + y1
+            landmarks.append((x, y))
+        return landmarks
+    else:
+        return None
+
+def main():
     video_path = 'X:/Videos_Hospital/WIN_20240619_16_27_45_Pro.mp4'  # Update this path to your video file
     model_path = 'X:/best.pt'  # Update this path to your YOLOv8 model
     skip_frames = 1  # Adjust as needed for performance

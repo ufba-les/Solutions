@@ -353,7 +353,7 @@ def calculate_landmark_displacement(landmarks1, landmarks2):
         displacements.append(displacement)
     return np.mean(displacements)
 
-if __name__ == "__main__":
+def main():
     video_path = 'X:/Videos_Hospital/WIN_20240619_16_27_45_Pro.mp4'  # Update this path to your video file
     model_path = 'X:/best.pt'  # Update this path to your YOLOv8 model
     skip_frames = 1  # Adjust as needed for performance
