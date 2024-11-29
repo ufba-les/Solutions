@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "solutions"
+version = "0.1.0"
+description = ""
+authors = ["Your Name <you@example.com>"]
+license = "PROPRIETARY"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12.3"
+numpy = "^1.26.4"
+opencv-python = "^4.9.0.80"
+ultralytics = "^8.3.27"
+mediapipe = "^0.10.14"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import argparse
 import mediapipe as mp
 from ultralytics import YOLO
 from collections import deque
@@ -86,11 +87,11 @@ def detect_person_in_bed_area(frame, bed_bounding_box, pose):
     else:
         return None
 
-def process_video_with_time_series_analysis(video_path, model_path, skip_frames=None):
+def process_video_with_pose_detection_inside_bed(video_path, model_path, skip_frames=None):
     """
     Processes the video to detect pose landmarks and monitor SDF values relative to the bed's bounding box.
-    Implements time-series analysis for anomaly detection and forecasting to predict bed exit.
-    
+    Implements combined variability metric to predict bed exit.
+
     Parameters:
         video_path: Path to the video file.
         model_path: Path to the YOLOv8 model file.
@@ -121,12 +122,14 @@ def process_video_with_time_series_analysis(video_path, model_path, skip_frames=
     # Threshold for displacement detection between frames
     displacement_threshold = 200  # Adjust based on your video's resolution and desired sensitivity
 
-    # Parameters for Time-Series Analysis
-    alpha = 0.5  # Smoothing factor for exponential smoothing (0 < alpha < 1)
-    anomaly_threshold = 30  # Threshold for anomaly detection
-    window_size = 30  # Number of past values to consider
+    # Parameters for Combined Variability Metric
+    window_size = 30  # Number of frames in the sliding window
+    combined_std_dev_threshold =70  # Threshold for combined standard deviation to trigger alert
 
-    # Initialize dictionaries to store SDF values and forecasts for each landmark
+    # Initialize deque to store composite SDF values
+    composite_sdf_history = deque(maxlen=window_size)
+
+    # List of landmarks to monitor
     landmarks_to_monitor = [
         mp_pose.PoseLandmark.LEFT_WRIST,
         mp_pose.PoseLandmark.RIGHT_WRIST,
@@ -134,8 +137,6 @@ def process_video_with_time_series_analysis(video_path, model_path, skip_frames=
         mp_pose.PoseLandmark.RIGHT_ANKLE,
         mp_pose.PoseLandmark.NOSE
     ]
-    sdf_history = {landmark_id: deque(maxlen=window_size) for landmark_id in landmarks_to_monitor}
-    forecast_values = {landmark_id: None for landmark_id in landmarks_to_monitor}
 
     while True:
         ret, frame = cap.read()
@@ -237,6 +238,10 @@ def process_video_with_time_series_analysis(video_path, model_path, skip_frames=
                 # Update previous_landmarks for the next frame
                 previous_landmarks = current_landmarks
 
+                # Initialize variables for composite SDF calculation
+                composite_sdf = 0
+                valid_landmarks = 0
+
                 # Loop through each landmark to monitor
                 for landmark_id in landmarks_to_monitor:
                     # Get the landmark from the pose landmarks
@@ -251,33 +256,9 @@ def process_video_with_time_series_analysis(video_path, model_path, skip_frames=
                     sdf = point_to_rect_sdf(x, y, x1_bed, y1_bed, x2_bed, y2_bed)
                     sdf_values.append(sdf)
 
-                    # Update the deque with the new SDF value
-                    sdf_history[landmark_id].append(sdf)
-
-                    # Apply exponential smoothing for forecasting
-                    if len(sdf_history[landmark_id]) == 1:
-                        # Initialize forecast with the first value
-                        forecast_values[landmark_id] = sdf
-                    else:
-                        # Update the forecast using exponential smoothing
-                        forecast_values[landmark_id] = alpha * sdf + (1 - alpha) * forecast_values[landmark_id]
-
-                    # Calculate the absolute difference between actual and forecasted value
-                    deviation = abs(sdf - forecast_values[landmark_id])
-
-                    # Display forecast and deviation
-                    cv2.putText(frame, f"Forecast: {forecast_values[landmark_id]:.1f}", (int(x) + 10, int(y) + 20),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                    cv2.putText(frame, f"Deviation: {deviation:.1f}", (int(x) + 10, int(y) + 40),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
-
-                    # Check for anomalies
-                    if deviation > anomaly_threshold:
-                        current_time = current_frame / frame_rate
-                        warning_text = f"Anomaly detected at {current_time:.2f}s"
-                        print(warning_text)
-                        cv2.putText(frame, warning_text, (50, 150),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    # Sum up SDF values for composite metric
+                    composite_sdf += sdf
+                    valid_landmarks += 1
 
                     # Find the closest point on the bed bounding box
                     closest_x, closest_y = closest_point_on_rect(x, y, x1_bed, y1_bed, x2_bed, y2_bed)
@@ -289,8 +270,31 @@ def process_video_with_time_series_analysis(video_path, model_path, skip_frames=
                     cv2.line(frame, (int(x), int(y)), (int(closest_x), int(closest_y)), (0, 255, 255), 1)
 
                     # Display the SDF value next to the landmark
-                    cv2.putText(frame, f"SDF: {sdf:.1f}", (int(x) + 10, int(y) - 10),
+                    cv2.putText(frame, f"SDF: {sdf:.1f}", (int(x) + 10, int(y)),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+
+                if valid_landmarks > 0:
+                    # Calculate average composite SDF
+                    composite_sdf /= valid_landmarks
+
+                    # Update the deque with the new composite SDF value
+                    composite_sdf_history.append(composite_sdf)
+
+                    # Compute standard deviation when the window is full
+                    if len(composite_sdf_history) == window_size:
+                        combined_std_dev = np.std(composite_sdf_history)
+
+                        # Display combined standard deviation on the frame
+                        cv2.putText(frame, f"Combined StdDev: {combined_std_dev:.1f}", (50, 200),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
+
+                        # Check if combined standard deviation exceeds threshold
+                        if combined_std_dev > combined_std_dev_threshold:
+                            current_time = current_frame / frame_rate
+                            warning_text = f"Warning: High overall movement at {current_time:.2f}s"
+                            print(warning_text)
+                            cv2.putText(frame, warning_text, (50, 250),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
                 # Check if all SDFs are positive (person has left the bed)
                 if all(sdf > 0 for sdf in sdf_values):
@@ -332,11 +336,11 @@ def process_video_with_time_series_analysis(video_path, model_path, skip_frames=
 def calculate_landmark_displacement(landmarks1, landmarks2):
     """
     Calculates the average displacement between two sets of landmarks.
-    
+
     Parameters:
         landmarks1: List of (x, y) tuples for the previous frame.
         landmarks2: List of (x, y) tuples for the current frame.
-    
+
     Returns:
         The average displacement value.
     """
@@ -350,10 +354,16 @@ def calculate_landmark_displacement(landmarks1, landmarks2):
         displacements.append(displacement)
     return np.mean(displacements)
 
-if __name__ == "__main__":
-    video_path = 'X:/Videos_Hospital/WIN_20240619_16_27_45_Pro.mp4'  # Update this path to your video file
-    model_path = 'X:/best.pt'  # Update this path to your YOLOv8 model
+def main():
+    parser = argparse.ArgumentParser(description="Video processing script with dynamic path inputs.")
+
+    # Add arguments for the video path and model path
+    parser.add_argument("--video_path", type=str, required=True, help="Path to the video file.")
+    parser.add_argument("--model_path", type=str, required=True, help="Path to the YOLOv8 model file.")
+
+    # Parse the arguments from the command line
+    args = parser.parse_args()
     skip_frames = 1  # Adjust as needed for performance
 
     # Call the function to process the video
-    process_video_with_time_series_analysis(video_path, model_path, skip_frames)
+    process_video_with_pose_detection_inside_bed(args.video_path, args.model_path, skip_frames)
