@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import mediapipe as mp
+import argparse
 from ultralytics import YOLO
 from collections import deque
 
@@ -351,9 +352,15 @@ def calculate_landmark_displacement(landmarks1, landmarks2):
     return np.mean(displacements)
 
 def main():
-    video_path = 'X:/Videos_Hospital/WIN_20240619_16_27_45_Pro.mp4'  # Update this path to your video file
-    model_path = 'X:/best.pt'  # Update this path to your YOLOv8 model
+    parser = argparse.ArgumentParser(description="Video processing script with dynamic path inputs.")
+
+    # Add arguments for the video path and model path
+    parser.add_argument("--video_path", type=str, required=True, help="Path to the video file.")
+    parser.add_argument("--model_path", type=str, required=True, help="Path to the YOLOv8 model file.")
+
+    # Parse the arguments from the command line
+    args = parser.parse_args()
     skip_frames = 1  # Adjust as needed for performance
 
     # Call the function to process the video
-    process_video_with_time_series_analysis(video_path, model_path, skip_frames)
+    process_video_with_time_series_analysis(args.video_path, args.model_path, skip_frames)

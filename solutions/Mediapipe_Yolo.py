@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import mediapipe as mp
+import argparse
 from ultralytics import YOLO
 
 def process_video_with_pose_detection_inside_bed(video_path, model_path, skip_frames=None):
@@ -152,8 +153,14 @@ def process_video_with_pose_detection_inside_bed(video_path, model_path, skip_fr
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    video_path = 'X:/Videos_Hospital/WIN_20240619_16_27_45_Pro.mp4'  # Update this path
-    model_path = 'X:/best.pt'  # Update this path
+    parser = argparse.ArgumentParser(description="Video processing script with dynamic path inputs.")
+
+    # Add arguments for the video path and model path
+    parser.add_argument("--video_path", type=str, required=True, help="Path to the video file.")
+    parser.add_argument("--model_path", type=str, required=True, help="Path to the YOLOv8 model file.")
+
+    # Parse the arguments from the command line
+    args = parser.parse_args()
     skip_frames = 1  # Adjust as needed
 
-    process_video_with_pose_detection_inside_bed(video_path, model_path, skip_frames)
+    process_video_with_pose_detection_inside_bed(args.video_path, args.model_path, skip_frames)
